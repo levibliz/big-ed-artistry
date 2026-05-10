@@ -9,8 +9,23 @@ type Order = Database['public']['Tables']['orders']['Row'] & {
   order_items: Database['public']['Tables']['order_items']['Row'][]
 }
 
-export default function OrdersPageContent({ orders }: { orders: Order[] }) {
+export default function OrdersPageContent({ orders, paymentMap }: { orders: Order[]; paymentMap: Record<string, { status: string; totalSubmitted: number }> }) {
   const [selected, setSelected] = useState<Order | null>(null)
+
+  const getPaymentDisplay = (order: Order) => {
+    if (order.payment_status !== ('NOT_PAID' as string)) return order.payment_status
+    const p = paymentMap[order.id]
+    if (!p) return order.payment_status
+    if (p.status === 'pending') return 'pending_verification'
+    if (p.status === 'rejected') return 'rejected'
+    return order.payment_status
+  }
+
+  // Show submitted amount if admin hasn't verified yet
+  const getDisplayAmountPaid = (order: Order) => {
+    if (order.amount_paid > 0) return order.amount_paid
+    return paymentMap[order.id]?.totalSubmitted ?? 0
+  }
 
   return (
     <div style={{ padding: 40 }}>
@@ -22,9 +37,9 @@ export default function OrdersPageContent({ orders }: { orders: Order[] }) {
         <Link href="/custom-artwork" style={{ padding: '12px 24px', fontSize: 12, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', background: 'linear-gradient(135deg, var(--gold-primary), var(--gold-accent))', color: 'var(--text-on-gold)', textDecoration: 'none' }}>+ New Order</Link>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: selected ? '1fr 380px' : '1fr', gap: 24, alignItems: 'start' }}>
+      <div className="orders-layout" style={{ display: 'grid', gridTemplateColumns: selected ? '1fr 380px' : '1fr', gap: 24, alignItems: 'start' }}>
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr 80px', padding: '14px 24px', borderBottom: '1px solid var(--border-color)' }}>
+          <div className="orders-header" style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr 80px', padding: '14px 24px', borderBottom: '1px solid var(--border-color)' }}>
             {['Order', 'Total', 'Paid', 'Status', 'Payment', ''].map(h => (
               <div key={h} style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>{h}</div>
             ))}
@@ -37,7 +52,7 @@ export default function OrdersPageContent({ orders }: { orders: Order[] }) {
               <Link href="/custom-artwork" style={{ display: 'inline-flex', marginTop: 20, padding: '12px 24px', fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', background: 'linear-gradient(135deg, var(--gold-primary), var(--gold-accent))', color: 'var(--text-on-gold)', textDecoration: 'none' }}>Place First Order</Link>
             </div>
           ) : orders.map(order => (
-            <div key={order.id} onClick={() => setSelected(selected?.id === order.id ? null : order)} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr 80px', padding: '20px 24px', borderBottom: '1px solid var(--border-color)', alignItems: 'center', cursor: 'pointer', background: selected?.id === order.id ? 'rgba(184,134,11,0.04)' : 'transparent', transition: 'background 0.2s' }}>
+            <div key={order.id} onClick={() => setSelected(selected?.id === order.id ? null : order)} className="orders-row" style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr 80px', padding: '20px 24px', borderBottom: '1px solid var(--border-color)', alignItems: 'center', cursor: 'pointer', background: selected?.id === order.id ? 'rgba(184,134,11,0.04)' : 'transparent', transition: 'background 0.2s' }}>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 500 }}>{order.order_number}</div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{formatDate(order.created_at)}</div>
@@ -45,8 +60,8 @@ export default function OrdersPageContent({ orders }: { orders: Order[] }) {
               <div style={{ fontSize: 14, color: 'var(--gold-light)', fontWeight: 500 }}>{formatPrice(order.total_amount)}</div>
               <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{formatPrice(order.amount_paid)}</div>
               <StatusBadge status={order.status} />
-              <StatusBadge status={order.payment_status} />
-              <button style={{ fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-muted)', padding: '6px 12px', cursor: 'pointer', fontFamily: '"Libre Franklin", sans-serif' }}>View</button>
+              <StatusBadge status={getPaymentDisplay(order)} />
+              <button className="order-view-btn" style={{ fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', background: 'none', border: '1px solid var(--border-color)', color: 'var(--text-muted)', padding: '6px 12px', cursor: 'pointer', fontFamily: '"Libre Franklin", sans-serif' }}>View</button>
             </div>
           ))}
         </div>
@@ -65,8 +80,7 @@ export default function OrdersPageContent({ orders }: { orders: Order[] }) {
                 {[
                   { label: 'Order Placed', done: true, date: formatDate(selected.created_at) },
                   { label: 'Payment Verified', done: selected.payment_status !== 'NOT_PAID' },
-                  { label: 'In Progress', done: ['in_progress', 'review', 'completed'].includes(selected.status) },
-                  { label: 'Under Review', done: ['review', 'completed'].includes(selected.status) },
+                  { label: 'In Progress', done: ['in_progress', 'completed'].includes(selected.status) },
                   { label: 'Completed', done: selected.status === 'completed' },
                 ].map(step => (
                   <div key={step.label} style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginBottom: 12 }}>
@@ -84,8 +98,8 @@ export default function OrdersPageContent({ orders }: { orders: Order[] }) {
                 <div style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 16 }}>Order Details</div>
                 {[
                   ['Total Amount', formatPrice(selected.total_amount)],
-                  ['Amount Paid', formatPrice(selected.amount_paid)],
-                  ['Remaining', formatPrice(selected.amount_remaining)],
+                  ['Amount Paid', formatPrice(getDisplayAmountPaid(selected))],
+                  ['Remaining', formatPrice(Math.max(0, selected.total_amount - getDisplayAmountPaid(selected)))],
                   ['Delivery', selected.delivery_location.replace(/_/g, ' ')],
                   ['Items', String(selected.order_items?.length ?? 0)],
                   ['Placed', formatDate(selected.created_at)],
@@ -104,13 +118,56 @@ export default function OrdersPageContent({ orders }: { orders: Order[] }) {
                 </div>
               )}
 
-              {selected.payment_status === 'NOT_PAID' && (
+              {selected.payment_status === ('NOT_PAID' as string) && !paymentMap[selected.id] && (
                 <Link href="/dashboard/payments" style={{ display: 'flex', justifyContent: 'center', marginTop: 24, padding: '12px', fontSize: 12, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', background: 'linear-gradient(135deg, var(--gold-primary), var(--gold-accent))', color: 'var(--text-on-gold)', textDecoration: 'none' }}>Upload Payment Proof →</Link>
+              )}
+              {paymentMap[selected.id]?.status === 'pending' && (
+                <div style={{ marginTop: 20, padding: '12px 16px', background: 'rgba(201,162,39,0.08)', border: '1px solid rgba(201,162,39,0.3)', fontSize: 13, color: 'var(--gold-light)' }}>
+                  ⏳ Your payment receipt is awaiting admin verification.
+                </div>
+              )}
+              {paymentMap[selected.id]?.status === 'rejected' && (
+                <div style={{ marginTop: 20, padding: '12px 16px', background: 'rgba(139,58,58,0.1)', border: '1px solid rgba(139,58,58,0.3)', fontSize: 13, color: 'var(--danger)' }}>
+                  ✕ Your payment was rejected. Please upload a new receipt.
+                  <Link href="/dashboard/payments" style={{ display: 'block', marginTop: 10, textAlign: 'center', padding: '10px', fontSize: 11, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', background: 'linear-gradient(135deg, var(--gold-primary), var(--gold-accent))', color: 'var(--text-on-gold)', textDecoration: 'none' }}>Re-upload Receipt →</Link>
+                </div>
               )}
             </div>
           </div>
         )}
       </div>
+      <style>{`
+        @media (max-width: 768px) {
+          .orders-layout {
+            grid-template-columns: 1fr !important;
+          }
+          .orders-header {
+            display: none !important;
+          }
+          .orders-row {
+            display: flex !important;
+            flex-direction: column !important;
+            gap: 6px !important;
+            padding: 16px 20px !important;
+          }
+          .orders-row > div {
+            display: flex !important;
+            justify-content: space-between !important;
+            align-items: center !important;
+            padding: 3px 0 !important;
+          }
+          .order-view-btn {
+            width: 100% !important;
+            margin-top: 4px !important;
+            text-align: center !important;
+          }
+        }
+        @media (max-width: 480px) {
+          .orders-row {
+            padding: 14px 16px !important;
+          }
+        }
+      `}</style>
     </div>
   )
 }

@@ -15,18 +15,21 @@ function LoginForm() {
   const errorParam = searchParams.get('error')
   const isExpired = errorParam === 'link_expired'
   const isInvalid = errorParam === 'invalid_token'
+  const isVerificationFailed = errorParam === 'verification_failed'
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [unverified, setUnverified] = useState(false)
   const [resendStatus, setResendStatus] = useState<'idle' | 'sending' | 'sent'>('idle')
 
-  // Auto-redirect if already authenticated
+  // Auto-redirect if already authenticated — use getUser() to validate against
+  // the server so a stale cookie for a deleted user doesn't cause a redirect loop
   useEffect(() => {
     const supabase = createClient()
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) router.replace(next)
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) router.replace(next)
     })
   }, [router, next])
 
@@ -34,12 +37,24 @@ function LoginForm() {
     if (!email || !password) { setError('Please fill in all fields.'); return }
     setLoading(true)
     setError('')
+    setUnverified(false)
     try {
-      await login(email, password)
+      const result = await login(email, password)
+      if ('error' in result) {
+        const msg = result.error
+        if (msg === 'Your email address has not been verified yet. Please check your inbox and click the verification link to activate your account.') {
+          setUnverified(true)
+          setError('')
+        } else {
+          setError(msg)
+        }
+        setLoading(false)
+        return
+      }
       router.push(next)
       router.refresh()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Login failed.')
+      setError(e instanceof Error && e.message ? e.message : 'Login failed. Please try again.')
       setLoading(false)
     }
   }
@@ -47,12 +62,12 @@ function LoginForm() {
   const handleResend = async () => {
     if (!email) { setError('Enter your email address above, then click resend.'); return }
     setResendStatus('sending')
-    try {
-      await resendConfirmation(email)
-      setResendStatus('sent')
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to resend.')
+    const result = await resendConfirmation(email)
+    if ('error' in result) {
+      setError(result.error)
       setResendStatus('idle')
+    } else {
+      setResendStatus('sent')
     }
   }
 
@@ -64,6 +79,15 @@ function LoginForm() {
       {confirmed && (
         <div style={{ marginBottom: 20, padding: '12px 16px', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.3)', borderLeft: '3px solid #22c55e', color: '#86efac', fontSize: 13, lineHeight: 1.5 }}>
           ✓ Email confirmed! You can now sign in.
+        </div>
+      )}
+
+      {unverified && (
+        <div style={{ marginBottom: 20, padding: '12px 16px', background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.3)', borderLeft: '3px solid #eab308', color: '#fde047', fontSize: 13, lineHeight: 1.6 }}>
+          ⚠ Your email address has not been verified yet. Please check your inbox and click the verification link to activate your account.
+          {' '}<button onClick={handleResend} disabled={resendStatus !== 'idle'} style={{ background: 'none', border: 'none', color: 'var(--gold-light)', cursor: resendStatus !== 'idle' ? 'default' : 'pointer', fontSize: 13, padding: 0, textDecoration: 'underline' }}>
+            {resendStatus === 'sending' ? 'Sending…' : resendStatus === 'sent' ? 'Sent ✓' : 'Resend verification email'}
+          </button>
         </div>
       )}
 
@@ -79,9 +103,19 @@ function LoginForm() {
         </div>
       )}
 
+      {isVerificationFailed && (
+        <div style={{ marginBottom: 20, padding: '12px 16px', background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.3)', borderLeft: '3px solid #eab308', color: '#fde047', fontSize: 13, lineHeight: 1.6 }}>
+          ⚠ Unable to complete email verification. If your email was already confirmed, please sign in below. Otherwise, enter your email and click{' '}
+          <button onClick={handleResend} disabled={resendStatus !== 'idle'} style={{ background: 'none', border: 'none', color: 'var(--gold-light)', cursor: 'pointer', fontSize: 13, padding: 0, textDecoration: 'underline' }}>
+            {resendStatus === 'sending' ? 'Sending…' : resendStatus === 'sent' ? 'Sent ✓' : 'resend confirmation email'}
+          </button>{' '}
+          to receive a new confirmation link.
+        </div>
+      )}
+
       {resendStatus === 'sent' && (
         <div style={{ marginBottom: 20, padding: '12px 16px', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.3)', borderLeft: '3px solid #22c55e', color: '#86efac', fontSize: 13 }}>
-          ✓ Confirmation email sent! Check your inbox.
+          ✓ A new verification email has been sent. Please check your inbox.
         </div>
       )}
 
@@ -101,7 +135,7 @@ function LoginForm() {
             <Input type="password" placeholder="Your password" value={password} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)} onKeyDown={(e: React.KeyboardEvent) => e.key === 'Enter' && handleSubmit()} />
           </FormGroup>
           <div style={{ textAlign: 'right', marginTop: 8 }}>
-            <Link href="#" style={{ fontSize: 12, color: 'var(--text-muted)', letterSpacing: '0.06em' }}>Forgot password?</Link>
+            <Link href="/forgot-password" style={{ fontSize: 12, color: 'var(--text-muted)', letterSpacing: '0.06em' }}>Forgot password?</Link>
           </div>
         </div>
         <button onClick={handleSubmit} disabled={loading} style={{ padding: '14px', fontSize: 12, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', background: loading ? 'var(--bg-card)' : 'linear-gradient(135deg, var(--gold-primary), var(--gold-accent))', color: loading ? 'var(--text-muted)' : 'var(--text-on-gold)', border: loading ? '1px solid var(--border-color)' : 'none', cursor: loading ? 'not-allowed' : 'pointer', fontFamily: '"Libre Franklin", sans-serif', transition: 'all 0.3s' }}>

@@ -21,7 +21,7 @@ const makeOrder = (overrides: Partial<Order> = {}): Order => ({
   total_amount: 50000, status: 'pending', payment_status: 'NOT_PAID',
   delivery_location: 'port_harcourt', delivery_address: '5 Main St',
   delivery_bus_stop: '', delivery_fee: 2000, subtotal: 48000,
-  amount_paid: 0, amount_remaining: 50000, notes: null,
+  amount_paid: 0, amount_remaining: 50000, idempotency_key: null, notes: null,
   created_at: '2024-01-15', updated_at: '2024-01-15',
   order_items: [],
   ...overrides,
@@ -29,52 +29,52 @@ const makeOrder = (overrides: Partial<Order> = {}): Order => ({
 
 describe('OrdersPageContent', () => {
   it('shows empty state when no orders', () => {
-    render(<OrdersPageContent orders={[]} />)
+    render(<OrdersPageContent orders={[]} paymentMap={{}} />)
     expect(screen.getByText('No orders yet.')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /place first order/i })).toHaveAttribute('href', '/custom-artwork')
   })
 
   it('renders order rows', () => {
-    render(<OrdersPageContent orders={[makeOrder()]} />)
+    render(<OrdersPageContent orders={[makeOrder()]} paymentMap={{}} />)
     expect(screen.getByText('ORD-001')).toBeInTheDocument()
     expect(screen.getByText('₦50,000')).toBeInTheDocument()
   })
 
   it('opens detail panel on row click', () => {
-    render(<OrdersPageContent orders={[makeOrder()]} />)
+    render(<OrdersPageContent orders={[makeOrder()]} paymentMap={{}} />)
     fireEvent.click(screen.getByText('ORD-001'))
     // Detail panel shows order number in header
     expect(screen.getAllByText('ORD-001').length).toBeGreaterThan(1)
     expect(screen.getByText('Order Timeline')).toBeInTheDocument()
   })
 
-  it('closes detail panel on ✕ click', () => {
-    render(<OrdersPageContent orders={[makeOrder()]} />)
+  it('closes detail panel on close click', () => {
+    render(<OrdersPageContent orders={[makeOrder()]} paymentMap={{}} />)
     fireEvent.click(screen.getByText('ORD-001'))
     fireEvent.click(screen.getByRole('button', { name: /✕/i }))
     expect(screen.queryByText('Order Timeline')).not.toBeInTheDocument()
   })
 
   it('shows Upload Payment link for unpaid orders in detail panel', () => {
-    render(<OrdersPageContent orders={[makeOrder()]} />)
+    render(<OrdersPageContent orders={[makeOrder()]} paymentMap={{}} />)
     fireEvent.click(screen.getByText('ORD-001'))
     expect(screen.getByRole('link', { name: /upload payment proof/i })).toHaveAttribute('href', '/dashboard/payments')
   })
 
   it('does not show payment link for fully paid orders', () => {
-    render(<OrdersPageContent orders={[makeOrder({ payment_status: 'FULLY_PAID' })]} />)
+    render(<OrdersPageContent orders={[makeOrder({ payment_status: 'FULLY_PAID' })]} paymentMap={{}} />)
     fireEvent.click(screen.getByText('ORD-001'))
     expect(screen.queryByRole('link', { name: /upload payment proof/i })).not.toBeInTheDocument()
   })
 
   it('shows notes when present', () => {
-    render(<OrdersPageContent orders={[makeOrder({ notes: 'Please rush this order' })]} />)
+    render(<OrdersPageContent orders={[makeOrder({ notes: 'Please rush this order' })]} paymentMap={{}} />)
     fireEvent.click(screen.getByText('ORD-001'))
     expect(screen.getByText('Please rush this order')).toBeInTheDocument()
   })
 
   it('renders New Order link', () => {
-    render(<OrdersPageContent orders={[]} />)
+    render(<OrdersPageContent orders={[]} paymentMap={{}} />)
     expect(screen.getByRole('link', { name: /\+ new order/i })).toHaveAttribute('href', '/custom-artwork')
   })
 })

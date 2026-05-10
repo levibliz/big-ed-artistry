@@ -10,6 +10,9 @@ jest.mock('@/lib/tokens', () => ({
 jest.mock('@/components/ui', () => ({
   StatusBadge: ({ status }: { status: string }) => <span>{status}</span>,
 }))
+jest.mock('@/app/actions/admin', () => ({
+  deleteUser: jest.fn(),
+}))
 
 type Profile = Database['public']['Tables']['profiles']['Row'] & {
   orders: {
@@ -29,7 +32,13 @@ const makeCustomer = (overrides: Partial<Profile> = {}): Profile => ({
   ...overrides,
 })
 
+const mockDeleteUser = jest.mocked(require('@/app/actions/admin').deleteUser)
+
 describe('AdminCustomersContent', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
   it('shows empty state when no customers', () => {
     render(<AdminCustomersContent customers={[]} />)
     expect(screen.getByText('No customers yet.')).toBeInTheDocument()
@@ -81,5 +90,246 @@ describe('AdminCustomersContent', () => {
   it('shows — for missing phone', () => {
     render(<AdminCustomersContent customers={[makeCustomer({ phone: null })]} />)
     expect(screen.getByText('—')).toBeInTheDocument()
+  })
+
+  // ── Delete UI ──────────────────────────────────────────────
+
+  it('shows Del button for each customer row', () => {
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    expect(screen.getByTestId('delete-user-u1')).toBeInTheDocument()
+  })
+
+  it('shows Delete User button in detail panel', () => {
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByText('Jane Doe'))
+    expect(screen.getByTestId('delete-user-panel')).toBeInTheDocument()
+  })
+
+  it('opens confirmation modal when Del button is clicked', () => {
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    expect(screen.getByTestId('confirm-delete-modal')).toBeInTheDocument()
+  })
+
+  it('opens confirmation modal from detail panel Delete User button', () => {
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByText('Jane Doe'))
+    fireEvent.click(screen.getByTestId('delete-user-panel'))
+    expect(screen.getByTestId('confirm-delete-modal')).toBeInTheDocument()
+  })
+
+  it('confirmation modal shows customer details', () => {
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    const nameMatches = screen.getAllByText('Jane Doe')
+    expect(nameMatches.length).toBeGreaterThan(0)
+    const emailMatches = screen.getAllByText('jane@test.com')
+    expect(emailMatches.length).toBeGreaterThan(0)
+  })
+
+  it('confirmation modal shows deletion type options', () => {
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    expect(screen.getByTestId('deletion-type-user_only')).toBeInTheDocument()
+    expect(screen.getByTestId('deletion-type-full')).toBeInTheDocument()
+  })
+
+  it('closes confirmation modal on cancel', () => {
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    expect(screen.getByTestId('confirm-delete-modal')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('confirm-delete-cancel'))
+    expect(screen.queryByTestId('confirm-delete-modal')).not.toBeInTheDocument()
+  })
+
+  it('modal shows warning message about related activities', () => {
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    expect(screen.getByText(/orders, deposits, uploads/i)).toBeInTheDocument()
+  })
+
+  // ── Delete User Only flow ──────────────────────────────────
+
+  it('calls deleteUser with user_only on confirm with default selection', async () => {
+    mockDeleteUser.mockResolvedValue({ success: true })
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    fireEvent.click(screen.getByTestId('confirm-delete-confirm'))
+    expect(mockDeleteUser).toHaveBeenCalledWith('u1', 'user_only')
+    await screen.findByText('No customers yet.')
+  })
+
+  it('shows success toast after user_only deletion', async () => {
+    mockDeleteUser.mockResolvedValue({ success: true })
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    fireEvent.click(screen.getByTestId('confirm-delete-confirm'))
+    expect(await screen.findByTestId('toast-notification')).toBeInTheDocument()
+    expect(screen.getByText('User deleted successfully.')).toBeInTheDocument()
+  })
+
+  it('removes customer from list after user_only deletion', async () => {
+    mockDeleteUser.mockResolvedValue({ success: true })
+    const customers = [
+      makeCustomer({ id: 'u1', full_name: 'Jane Doe' }),
+      makeCustomer({ id: 'u2', full_name: 'John Smith', orders: [] }),
+    ]
+    render(<AdminCustomersContent customers={customers} />)
+    expect(screen.getByText('2 customers')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    fireEvent.click(screen.getByTestId('confirm-delete-confirm'))
+    expect(await screen.findByText('John Smith'))
+    expect(screen.queryByText('Jane Doe')).not.toBeInTheDocument()
+    expect(screen.getByText('1 customers')).toBeInTheDocument()
+  })
+
+  it('closes detail panel when deleted customer was selected', async () => {
+    mockDeleteUser.mockResolvedValue({ success: true })
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByText('Jane Doe'))
+    expect(screen.getByText('Order History')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('delete-user-panel'))
+    fireEvent.click(screen.getByTestId('confirm-delete-confirm'))
+    await screen.findByText('No customers yet.')
+    expect(screen.queryByText('Order History')).not.toBeInTheDocument()
+  })
+
+  it('shows error in modal when deleteUser fails', async () => {
+    mockDeleteUser.mockResolvedValue({ error: 'Failed to delete user.' })
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    fireEvent.click(screen.getByTestId('confirm-delete-confirm'))
+    expect(await screen.findByTestId('confirm-delete-error')).toHaveTextContent('Failed to delete user.')
+  })
+
+  // ── Delete User + All Activities flow ──────────────────────
+
+  it('calls deleteUser with full when "Delete All Activities" is selected', async () => {
+    mockDeleteUser.mockResolvedValue({ success: true })
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    fireEvent.click(screen.getByDisplayValue('full'))
+    fireEvent.click(screen.getByTestId('confirm-delete-confirm'))
+    expect(mockDeleteUser).toHaveBeenCalledWith('u1', 'full')
+    await screen.findByText('No customers yet.')
+  })
+
+  it('shows full deletion success toast message', async () => {
+    mockDeleteUser.mockResolvedValue({ success: true })
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    fireEvent.click(screen.getByDisplayValue('full'))
+    fireEvent.click(screen.getByTestId('confirm-delete-confirm'))
+    expect(await screen.findByTestId('toast-notification')).toBeInTheDocument()
+    expect(screen.getByText(/User and all associated records deleted/i)).toBeInTheDocument()
+  })
+
+  it('removes customer from list after full deletion', async () => {
+    mockDeleteUser.mockResolvedValue({ success: true })
+    const customers = [
+      makeCustomer({ id: 'u1', full_name: 'Jane Doe' }),
+      makeCustomer({ id: 'u2', full_name: 'John Smith', orders: [] }),
+    ]
+    render(<AdminCustomersContent customers={customers} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    fireEvent.click(screen.getByDisplayValue('full'))
+    fireEvent.click(screen.getByTestId('confirm-delete-confirm'))
+    expect(await screen.findByText('John Smith'))
+    expect(screen.queryByText('Jane Doe')).not.toBeInTheDocument()
+  })
+
+  it('shows error for full deletion failure', async () => {
+    mockDeleteUser.mockResolvedValue({ error: 'Deletion failed.' })
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    fireEvent.click(screen.getByDisplayValue('full'))
+    fireEvent.click(screen.getByTestId('confirm-delete-confirm'))
+    expect(await screen.findByTestId('confirm-delete-error')).toHaveTextContent('Deletion failed.')
+  })
+
+  it('switches between deletion types before confirming', async () => {
+    mockDeleteUser.mockResolvedValue({ success: true })
+    render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByTestId('delete-user-u1'))
+    // Start with user_only (default)
+    fireEvent.click(screen.getByDisplayValue('full'))
+    fireEvent.click(screen.getByDisplayValue('user_only'))
+    fireEvent.click(screen.getByTestId('confirm-delete-confirm'))
+    expect(mockDeleteUser).toHaveBeenCalledWith('u1', 'user_only')
+    await screen.findByText('No customers yet.')
+  })
+})
+
+describe('AdminCustomersContent — mobile responsiveness', () => {
+  it('root element has admin-customers-page class', () => {
+    const { container } = render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    expect(container.querySelector('.admin-customers-page')).toBeInTheDocument()
+  })
+
+  it('filters row has customers-filters class', () => {
+    const { container } = render(<AdminCustomersContent customers={[]} />)
+    expect(container.querySelector('.customers-filters')).toBeInTheDocument()
+  })
+
+  it('outer grid has customers-layout class', () => {
+    const { container } = render(<AdminCustomersContent customers={[]} />)
+    expect(container.querySelector('.customers-layout')).toBeInTheDocument()
+  })
+
+  it('table header has customers-table-head class', () => {
+    const { container } = render(<AdminCustomersContent customers={[]} />)
+    expect(container.querySelector('.customers-table-head')).toBeInTheDocument()
+  })
+
+  it('each customer row has customer-row class', () => {
+    const customers = [makeCustomer(), makeCustomer({ id: 'u2', full_name: 'Bob', email: 'bob@test.com', orders: [] })]
+    const { container } = render(<AdminCustomersContent customers={customers} />)
+    expect(container.querySelectorAll('.customer-row')).toHaveLength(2)
+  })
+
+  it('each row contains customer-card-meta for mobile display', () => {
+    const { container } = render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    expect(container.querySelector('.customer-card-meta')).toBeInTheDocument()
+  })
+
+  it('customer-card-meta contains email and order count', () => {
+    const { container } = render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    const meta = container.querySelector('.customer-card-meta') as HTMLElement
+    expect(meta.textContent).toContain('jane@test.com')
+    expect(meta.textContent).toContain('1 orders')
+  })
+
+  it('detail panel has customer-detail-panel class when selected', () => {
+    const { container } = render(<AdminCustomersContent customers={[makeCustomer()]} />)
+    fireEvent.click(screen.getByText('Jane Doe'))
+    expect(container.querySelector('.customer-detail-panel')).toBeInTheDocument()
+  })
+
+  it('style block contains mobile breakpoint', () => {
+    const { container } = render(<AdminCustomersContent customers={[]} />)
+    const styles = Array.from(container.querySelectorAll('style')).map(s => s.textContent ?? '').join('')
+    expect(styles).toMatch(/\.admin-customers-page/)
+    expect(styles).toMatch(/max-width:\s*700px/)
+  })
+
+  it('style block hides table header on mobile', () => {
+    const { container } = render(<AdminCustomersContent customers={[]} />)
+    const styles = Array.from(container.querySelectorAll('style')).map(s => s.textContent ?? '').join('')
+    expect(styles).toMatch(/\.customers-table-head/)
+    expect(styles).toMatch(/display:\s*none/)
+  })
+
+  it('style block makes detail panel non-sticky on mobile', () => {
+    const { container } = render(<AdminCustomersContent customers={[]} />)
+    const styles = Array.from(container.querySelectorAll('style')).map(s => s.textContent ?? '').join('')
+    expect(styles).toMatch(/\.customer-detail-panel/)
+    expect(styles).toMatch(/position:\s*static/)
+  })
+
+  it('style block contains tablet breakpoint', () => {
+    const { container } = render(<AdminCustomersContent customers={[]} />)
+    const styles = Array.from(container.querySelectorAll('style')).map(s => s.textContent ?? '').join('')
+    expect(styles).toMatch(/min-width:\s*701px/)
+    expect(styles).toMatch(/max-width:\s*1024px/)
   })
 })

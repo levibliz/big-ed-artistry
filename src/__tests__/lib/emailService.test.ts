@@ -79,7 +79,7 @@ describe('sendEmail', () => {
 
     expect(result.success).toBe(false)
     expect(result.error).toBe('Auth failed')
-    expect(mockSend).toHaveBeenCalledTimes(3)
+    expect(mockSend).toHaveBeenCalledTimes(4) // 3 retries + 1 admin alert
   })
 
   it('returns failure when Resend returns an error object', async () => {
@@ -166,6 +166,8 @@ describe('sendOrderConfirmation', () => {
     size: 'A3',
     medium: 'Charcoal',
     total: 45000,
+    amountPaid: 45000,
+    isPartial: false,
     estimatedDelivery: '2024-12-01',
   }
 
@@ -362,6 +364,8 @@ describe('emailTemplates', () => {
       size: 'A3',
       medium: 'Charcoal',
       total: 45000,
+      amountPaid: 45000,
+      isPartial: false,
       estimatedDelivery: '2024-12-01',
     })
     expect(html).toContain('BEA-001')
@@ -392,7 +396,7 @@ describe('emailTemplates', () => {
       total: 25000,
       isPartial: false,
     })
-    expect(html).toContain('fully paid')
+    expect(html).toContain('full payment has been confirmed')
   })
 
   it('paymentReminderTemplate renders balance and order number', () => {
@@ -450,7 +454,7 @@ describe('emailTemplates', () => {
   it('all templates include the layout wrapper (BIG ED ARTISTRY header)', () => {
     const templates = [
       welcomeTemplate({ name: 'X' }),
-      orderConfirmationTemplate({ name: 'X', orderNumber: 'O', service: 'S', size: 'A3', medium: 'P', total: 1000, estimatedDelivery: '2024-01-01' }),
+      orderConfirmationTemplate({ name: 'X', orderNumber: 'O', service: 'S', size: 'A3', medium: 'P', total: 1000, amountPaid: 1000, isPartial: false, estimatedDelivery: '2024-01-01' }),
       paymentConfirmationTemplate({ name: 'X', orderNumber: 'O', amountPaid: 500, total: 1000, isPartial: false }),
       paymentReminderTemplate({ name: 'X', orderNumber: 'O', balanceDue: 500 }),
       orderStatusUpdateTemplate({ name: 'X', orderNumber: 'O', status: 'confirmed' }),

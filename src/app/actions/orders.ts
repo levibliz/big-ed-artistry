@@ -1,49 +1,40 @@
 "use server"
 
+import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { sendOrderConfirmation, sendAdminNewOrder } from '@/lib/emailService'
+import { toUserMessage, ERR } from '@/lib/errorMessages'
 import type { Database } from '@/lib/types/database'
 
 type OrderInsert = Database['public']['Tables']['orders']['Insert']
 type OrderItemInsert = Database['public']['Tables']['order_items']['Insert']
 
-function friendlyOrderError(e: unknown): string {
-  const msg = e instanceof Error ? e.message : String(e)
-  // Log the raw error server-side for debugging
-  console.error('[createOrder error]', msg)
-  if (msg.includes('fetch failed') || msg.includes('Connect Timeout') || msg.includes('UND_ERR') || msg.includes('ECONNREFUSED')) {
-    return 'Unable to connect. Please check your internet connection and try again.'
-  }
-  if (msg === 'SESSION_EXPIRED' || msg.includes('Not authenticated') || msg.includes('JWT') || msg.includes('not authenticated')) {
-    return 'SESSION_EXPIRED'
-  }
-  if (msg.includes('foreign key') || msg.includes('user_id_fkey') || msg.includes('violates foreign key')) {
-    return 'SESSION_EXPIRED'
-  }
-  if (msg.includes('duplicate') || msg.includes('unique constraint')) {
-    return 'It looks like this order was already submitted. Please check your orders page.'
-  }
-  if (msg.includes('storage') || msg.includes('upload') || msg.includes('bucket')) {
-    return 'Receipt upload failed. Please try a smaller image (JPG/PNG under 5MB).'
-  }
-  if (msg.includes('row-level security') || msg.includes('permission denied') || msg.includes('policy')) {
-    return 'Permission denied. Please sign in and try again.'
-  }
-  // Return the raw message so nothing is silently swallowed
-  return msg
-}
-
 type OrderRow = Database['public']['Tables']['orders']['Row']
+type OrderItemRow = Database['public']['Tables']['order_items']['Row']
 
 export async function createOrder(
-  order: Omit<OrderInsert, 'order_number' | 'user_id'>,
-  items: Omit<OrderItemInsert, 'order_id'>[]
-): Promise<OrderRow> {
+  order: Omit<OrderInsert, 'order_number' | 'user_id' | 'amount_paid'>,
+  items: Omit<OrderItemInsert, 'order_id'>[],
+  amountPaid = 0,
+  paymentType: 'full' | 'partial' = 'full',
+  discount?: { originalSubtotal: number; amount: number; label: string },
+  idempotencyKey?: string
+): Promise<OrderRow & { createdItems: OrderItemRow[] }> {
   try {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) throw new Error('Not authenticated')
+
+    // Check for existing order with same idempotency key (prevents duplicate submissions)
+    if (idempotencyKey) {
+      const { data: existing } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('idempotency_key', idempotencyKey)
+        .single()
+      if (existing) return { ...existing, createdItems: [] } as OrderRow & { createdItems: OrderItemRow[] }
+    }
 
     // Ensure profile row exists (safety net for users registered before the trigger was added)
     const admin = createAdminClient()
@@ -61,7 +52,12 @@ export async function createOrder(
 
     const { data: newOrder, error: orderError } = await supabase
       .from('orders')
-      .insert({ ...order, user_id: user.id, order_number: numData as string })
+      .insert({
+        ...order,
+        user_id: user.id,
+        order_number: numData as string,
+        idempotency_key: idempotencyKey ?? null,
+      })
       .select()
       .single()
     if (orderError) throw new Error(orderError.message)
@@ -71,6 +67,13 @@ export async function createOrder(
       .insert(items.map(item => ({ ...item, order_id: newOrder.id })))
     if (itemsError) throw new Error(itemsError.message)
 
+    // Select back the created items so callers can link uploads, etc.
+    const { data: createdItems } = await supabase
+      .from('order_items')
+      .select('*')
+      .eq('order_id', newOrder.id)
+      .order('created_at', { ascending: true })
+
     // Send notification emails (non-blocking — don't fail the order if email fails)
     const firstItem = items[0]
     const service = firstItem?.artwork_type === 'photo_enlargement'
@@ -78,14 +81,33 @@ export async function createOrder(
       : firstItem?.item_type === 'store_product'
         ? 'Store Product'
         : 'Custom Artwork'
+
+    const amountPaidForEmail = amountPaid
+    const isPartial = paymentType === 'partial'
+    const emailItems = items.map(i => ({
+      label: i.size_label
+        ? `${i.artwork_type === 'photo_enlargement' ? 'Photo Enlargement' : 'Custom Artwork'} — ${i.size_label}`
+        : i.product_id
+          ? `Store Product × ${i.quantity}`
+          : 'Artwork',
+      price: i.item_subtotal,
+    }))
+
     const emailData = {
       name: user.user_metadata?.full_name ?? user.email ?? 'Customer',
       orderNumber: newOrder.order_number,
       service,
       size: firstItem?.size_label ?? '—',
       medium: firstItem?.canvas_option ?? '—',
+      subtotal: discount?.originalSubtotal,
+      discountAmount: discount?.amount,
+      discountLabel: discount?.label,
       total: newOrder.total_amount,
-      estimatedDelivery: '7–14 business days',
+      amountPaid: amountPaidForEmail,
+      isPartial,
+      balanceDue: isPartial ? newOrder.total_amount - amountPaidForEmail : undefined,
+      estimatedDelivery: '1–3 weeks',
+      items: emailItems,
     }
 
     await Promise.allSettled([
@@ -99,9 +121,16 @@ export async function createOrder(
       }),
     ])
 
-    return newOrder
+    revalidatePath('/dashboard')
+    revalidatePath('/dashboard/orders')
+    revalidatePath('/dashboard/payments')
+    revalidatePath('/admin/dashboard')
+    revalidatePath('/admin/orders')
+
+    return { ...newOrder, createdItems: createdItems ?? [] } as OrderRow & { createdItems: OrderItemRow[] }
   } catch (e) {
-    throw new Error(friendlyOrderError(e))
+    console.error('[createOrder error]', e instanceof Error ? e.message : e)
+    throw new Error(toUserMessage(e))
   }
 }
 
@@ -115,7 +144,7 @@ export async function getMyOrders() {
     .select('*')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
-  if (error) throw new Error(error.message)
+  if (error) throw new Error(ERR.GENERIC)
 
   const orderIds = (orders ?? []).map(o => o.id)
   const { data: items } = orderIds.length > 0
@@ -134,7 +163,7 @@ export async function getAllOrders() {
     .from('orders')
     .select('*')
     .order('created_at', { ascending: false })
-  if (error) throw new Error(error.message)
+  if (error) throw new Error(ERR.GENERIC)
 
   // Fetch profiles and items separately
   const { data: profiles } = await admin.from('profiles').select('id, full_name, email, phone')
@@ -158,6 +187,28 @@ export async function updateOrderStatus(
     .eq('id', id)
     .select()
     .single()
-  if (error) throw new Error(error.message)
+  if (error) throw new Error(ERR.GENERIC)
+
+  // Send notification email to user
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('email, full_name')
+    .eq('id', data.user_id)
+    .single()
+
+  if (profile?.email) {
+    const { sendOrderStatusUpdate } = await import('@/lib/emailService')
+    await sendOrderStatusUpdate(profile.email, {
+      name: profile.full_name ?? profile.email,
+      orderNumber: data.order_number,
+      status: status ?? 'pending',
+    }).catch(err => console.error('[updateOrderStatus] Email failed:', err))
+  }
+
+  revalidatePath('/dashboard')
+  revalidatePath('/dashboard/orders')
+  revalidatePath('/admin/orders')
+  revalidatePath('/admin/dashboard')
+
   return data
 }

@@ -1,12 +1,17 @@
 "use server"
 
 import { createClient } from '@/lib/supabase/server'
+import { ERR } from '@/lib/errorMessages'
 import type { Database, UploadType } from '@/lib/types/database'
 
 const BUCKET_MAP: Record<UploadType, string> = {
   artwork_reference: 'artwork-references',
   payment_receipt: 'payment-receipts',
 }
+
+const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
+const ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'pdf']
+const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
 
 type UploadRow = Database['public']['Tables']['uploads']['Row']
 
@@ -20,10 +25,22 @@ export async function uploadFile(
   if (!user) throw new Error('Not authenticated')
 
   const file = formData.get('file') as File
-  if (!file) throw new Error('No file provided')
+  if (!file) throw new Error(ERR.UPLOAD_NO_FILE)
+
+  // Server-side file validation
+  const ext = (file.name.split('.').pop() ?? '').toLowerCase()
+  if (!ALLOWED_EXTENSIONS.includes(ext)) {
+    throw new Error(ERR.UPLOAD_INVALID_TYPE)
+  }
+  // Only check MIME type for non-PDF files (PDF MIME types vary across browsers)
+  if (file.type && ext !== 'pdf' && !ALLOWED_MIME_TYPES.includes(file.type)) {
+    throw new Error(ERR.UPLOAD_INVALID_TYPE)
+  }
+  if (file.size > MAX_FILE_SIZE) {
+    throw new Error(ERR.UPLOAD_TOO_LARGE)
+  }
 
   const bucket = BUCKET_MAP[fileType]
-  const ext = file.name.split('.').pop()
   const storagePath = `${user.id}/${Date.now()}.${ext}`
 
   // Upload to Supabase Storage
@@ -32,14 +49,14 @@ export async function uploadFile(
     .upload(storagePath, file, { upsert: false })
   if (uploadError) {
     console.error('[uploadFile storage error]', uploadError.message)
-    throw new Error(uploadError.message)
+    throw new Error(ERR.UPLOAD_FAILED)
   }
 
   // Get signed URL (valid 1 year)
   const { data: urlData } = await supabase.storage
     .from(bucket)
     .createSignedUrl(storagePath, 60 * 60 * 24 * 365)
-  if (!urlData?.signedUrl) throw new Error('Failed to generate signed URL')
+  if (!urlData?.signedUrl) throw new Error(ERR.UPLOAD_URL_FAILED)
 
   // Record in uploads table
   const { data: upload, error: dbError } = await supabase
@@ -57,7 +74,7 @@ export async function uploadFile(
     .single()
   if (dbError) {
     console.error('[uploadFile db error]', dbError.message, dbError.details, dbError.hint)
-    throw new Error(dbError.message)
+    throw new Error(ERR.UPLOAD_FAILED)
   }
 
   return upload
@@ -69,6 +86,18 @@ export async function uploadPaymentReceipt(formData: FormData) {
 
 export async function uploadArtworkReference(formData: FormData, orderItemId?: string) {
   return uploadFile(formData, 'artwork_reference', orderItemId)
+}
+
+export async function linkUploadToOrderItem(uploadId: string, orderItemId: string) {
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from('uploads')
+    .update({ order_item_id: orderItemId })
+    .eq('id', uploadId)
+  if (error) {
+    console.error('[linkUploadToOrderItem error]', error.message)
+    throw new Error('Failed to link upload to order item')
+  }
 }
 
 export async function getMyUploads() {
@@ -84,42 +113,83 @@ export async function getMyUploads() {
   return data as UploadRow[]
 }
 
+type OrderItemRow = Database['public']['Tables']['order_items']['Row']
+type PaymentRow = Database['public']['Tables']['payments']['Row']
+
+/** Fetch uploads linked to a specific order for the current user */
 export async function getUploadsByOrder(orderId: string) {
   const supabase = await createClient()
-  const { data, error } = await supabase
-    .from('uploads')
-    .select('*')
-    .eq('user_id', (await supabase.auth.getUser()).data.user?.id ?? '')
-    .order('created_at', { ascending: false })
-  if (error) return []
-  // Filter by order_item_id linkage or return all user uploads for now
-  return (data ?? []) as UploadRow[]
-}
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
 
-export async function getAdminUploadsForOrder(orderId: string) {
-  const { createAdminClient } = await import('@/lib/supabase/server')
-  const admin = createAdminClient()
-  // Get order items for this order
-  const { data: items } = await admin
+  // Get the user's order items for this order
+  const { data: items } = await supabase
     .from('order_items')
     .select('id')
     .eq('order_id', orderId)
   const itemIds = (items ?? []).map(i => i.id)
+  if (itemIds.length === 0) return []
 
   // Get uploads linked to those items
-  const { data: linked } = itemIds.length > 0
-    ? await admin.from('uploads').select('*').in('order_item_id', itemIds).order('created_at', { ascending: false })
-    : { data: [] }
+  const { data, error } = await supabase
+    .from('uploads')
+    .select('*')
+    .in('order_item_id', itemIds)
+    .order('created_at', { ascending: false })
+  if (error) return []
+  return (data ?? []) as UploadRow[]
+}
 
-  // Also get payment receipts for this order via payments table
+export interface OrderItemWithUploads extends OrderItemRow {
+  uploads: UploadRow[]
+}
+
+export interface AdminOrderUploads {
+  items: OrderItemWithUploads[]
+  paymentReceipts: PaymentRow[]
+}
+
+export async function getAdminUploadsForOrder(orderId: string): Promise<AdminOrderUploads> {
+  const { createAdminClient } = await import('@/lib/supabase/server')
+  const admin = createAdminClient()
+
+  const { data: items } = await admin
+    .from('order_items')
+    .select('*')
+    .eq('order_id', orderId)
+    .order('created_at', { ascending: true })
+  const orderItems = (items ?? []) as OrderItemRow[]
+  const itemIds = orderItems.map(i => i.id)
+
+  // Get uploads linked to those items, keyed by order_item_id
+  let uploadsByItem: Record<string, UploadRow[]> = {}
+  if (itemIds.length > 0) {
+    const { data: linked } = await admin
+      .from('uploads')
+      .select('*')
+      .in('order_item_id', itemIds)
+      .order('created_at', { ascending: false })
+    const uploads = (linked ?? []) as UploadRow[]
+    for (const u of uploads) {
+      if (u.order_item_id) {
+        if (!uploadsByItem[u.order_item_id]) uploadsByItem[u.order_item_id] = []
+        uploadsByItem[u.order_item_id].push(u)
+      }
+    }
+  }
+
+  // Get payment receipts for this order
   const { data: payments } = await admin
     .from('payments')
-    .select('receipt_url, payment_type, amount, status, created_at')
+    .select('*')
     .eq('order_id', orderId)
     .order('created_at', { ascending: true })
 
   return {
-    artworkRefs: (linked ?? []) as UploadRow[],
-    paymentReceipts: (payments ?? []),
+    items: orderItems.map(item => ({
+      ...item,
+      uploads: uploadsByItem[item.id] ?? [],
+    })),
+    paymentReceipts: (payments ?? []) as PaymentRow[],
   }
 }

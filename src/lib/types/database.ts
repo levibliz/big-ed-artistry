@@ -3,7 +3,7 @@
 
 export type UserRole = 'customer' | 'admin'
 export type ProductCategory = 'print' | 'canvas' | 'bundle' | 'frame'
-export type OrderStatus = 'pending' | 'confirmed' | 'in_progress' | 'review' | 'completed' | 'cancelled'
+export type OrderStatus = 'pending' | 'in_progress' | 'completed' | 'canceled'
 export type PaymentStatus = 'NOT_PAID' | 'PARTIALLY_PAID' | 'FULLY_PAID'
 export type DeliveryLocation = 'port_harcourt' | 'rivers_state' | 'outside_rivers'
 export type ArtworkType = 'custom_artwork' | 'photo_enlargement'
@@ -110,6 +110,7 @@ export interface Database {
           total_amount: number
           amount_paid: number
           amount_remaining: number
+          idempotency_key: string | null
           notes: string | null
           created_at: string
           updated_at: string
@@ -127,6 +128,7 @@ export interface Database {
           subtotal: number
           total_amount: number
           amount_paid?: number
+          idempotency_key?: string | null
           notes?: string | null
           created_at?: string
           updated_at?: string
@@ -140,6 +142,7 @@ export interface Database {
           subtotal?: number
           total_amount?: number
           amount_paid?: number
+          idempotency_key?: string | null
           notes?: string | null
           updated_at?: string
         }
@@ -330,6 +333,42 @@ export interface Database {
           rating?: number
         }
         Relationships: []
+      }
+      notification_preferences: {
+        Row: {
+          user_id: string
+          order_confirmation: boolean
+          payment_confirmation: boolean
+          payment_reminder: boolean
+          order_status_update: boolean
+          welcome: boolean
+          updated_at: string
+        }
+        Insert: {
+          user_id: string
+          order_confirmation?: boolean
+          payment_confirmation?: boolean
+          payment_reminder?: boolean
+          order_status_update?: boolean
+          welcome?: boolean
+          updated_at?: string
+        }
+        Update: {
+          order_confirmation?: boolean
+          payment_confirmation?: boolean
+          payment_reminder?: boolean
+          order_status_update?: boolean
+          welcome?: boolean
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'notification_preferences_user_id_fkey'
+            columns: ['user_id']
+            referencedRelation: 'profiles'
+            referencedColumns: ['id']
+          }
+        ]
       }
     }
     Views: Record<string, never>

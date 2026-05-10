@@ -1,6 +1,7 @@
 'use client'
 import { createContext, useCallback, useContext, useEffect, useReducer, useState, type ReactNode } from 'react'
 import type { CartOrder } from '@/lib/customArtwork'
+import CartSuccessModal from '@/components/ui/CartSuccessModal'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 export interface StoreProduct {
@@ -33,7 +34,7 @@ interface CartState {
   artworkOrders: CartOrder[]
   storeItems: CartStoreItem[]
   ratings: Record<string, number>  // productId → user rating
-  toast: string | null
+  cartModal: { itemName: string } | null
 }
 
 type CartAction =
@@ -43,7 +44,7 @@ type CartAction =
   | { type: 'REMOVE_STORE_ITEM'; productId: string }
   | { type: 'SET_STORE_QUANTITY'; productId: string; quantity: number }
   | { type: 'RATE_PRODUCT'; productId: string; rating: number }
-  | { type: 'SET_TOAST'; message: string | null }
+  | { type: 'SET_CART_MODAL'; payload: { itemName: string } | null }
   | { type: 'HYDRATE'; state: Partial<CartState> }
   | { type: 'CLEAR_CART' }
 
@@ -56,7 +57,7 @@ function reducer(state: CartState, action: CartAction): CartState {
     case 'ADD_ARTWORK': {
       const exists = state.artworkOrders.find(o => o.id === action.order.id)
       if (exists) return state
-      return { ...state, artworkOrders: [action.order, ...state.artworkOrders], toast: 'Artwork added to cart!' }
+      return { ...state, artworkOrders: [action.order, ...state.artworkOrders], cartModal: { itemName: 'Artwork' } }
     }
 
     case 'REMOVE_ARTWORK':
@@ -70,13 +71,13 @@ function reducer(state: CartState, action: CartAction): CartState {
           storeItems: state.storeItems.map(i =>
             i.product.id === action.product.id ? { ...i, quantity: i.quantity + 1 } : i
           ),
-          toast: `${action.product.name} quantity updated!`,
+          cartModal: { itemName: action.product.name },
         }
       }
       return {
         ...state,
         storeItems: [...state.storeItems, { type: 'store', product: action.product, quantity: 1 }],
-        toast: `${action.product.name} added to cart!`,
+        cartModal: { itemName: action.product.name },
       }
     }
 
@@ -97,8 +98,8 @@ function reducer(state: CartState, action: CartAction): CartState {
     case 'CLEAR_CART':
       return { ...state, artworkOrders: [], storeItems: [] }
 
-    case 'SET_TOAST':
-      return { ...state, toast: action.message }
+    case 'SET_CART_MODAL':
+      return { ...state, cartModal: action.payload }
 
     default:
       return state
@@ -108,7 +109,7 @@ function reducer(state: CartState, action: CartAction): CartState {
 // ─── Context ──────────────────────────────────────────────────────────────
 const STORAGE_KEY = 'biged_cart_v2'
 
-const initial: CartState = { artworkOrders: [], storeItems: [], ratings: {}, toast: null }
+const initial: CartState = { artworkOrders: [], storeItems: [], ratings: {}, cartModal: null }
 
 interface CartContextValue {
   state: CartState
@@ -123,7 +124,7 @@ interface CartContextValue {
   setStoreQuantity: (productId: string, qty: number) => void
   rateProduct: (productId: string, rating: number) => void
   clearCart: () => void
-  dismissToast: () => void
+  dismissCartModal: () => void
 }
 
 const CartContext = createContext<CartContextValue | null>(null)
@@ -157,13 +158,6 @@ export function CartProvider({ children }: { children: ReactNode }) {
     } catch { /* ignore */ }
   }, [hydrated, state.artworkOrders, state.storeItems, state.ratings])
 
-  // Auto-dismiss toast
-  useEffect(() => {
-    if (!state.toast) return
-    const t = setTimeout(() => dispatch({ type: 'SET_TOAST', message: null }), 3000)
-    return () => clearTimeout(t)
-  }, [state.toast])
-
   const artworkTotal = state.artworkOrders.reduce((s, o) => s + o.totalPrice, 0)
   const storeTotal = state.storeItems.reduce((s, i) => s + i.product.price * i.quantity, 0)
   const grandTotal = artworkTotal + storeTotal
@@ -175,26 +169,17 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const removeStoreItem = useCallback((productId: string) => dispatch({ type: 'REMOVE_STORE_ITEM', productId }), [])
   const setStoreQuantity = useCallback((productId: string, qty: number) => dispatch({ type: 'SET_STORE_QUANTITY', productId, quantity: qty }), [])
   const rateProduct = useCallback((productId: string, rating: number) => dispatch({ type: 'RATE_PRODUCT', productId, rating }), [])
-  const dismissToast = useCallback(() => dispatch({ type: 'SET_TOAST', message: null }), [])
+  const dismissCartModal = useCallback(() => dispatch({ type: 'SET_CART_MODAL', payload: null }), [])
   const clearCart = useCallback(() => dispatch({ type: 'CLEAR_CART' }), [])
 
   return (
-    <CartContext.Provider value={{ state, totalCount, grandTotal, artworkTotal, storeTotal, addArtwork, removeArtwork, addStoreItem, removeStoreItem, setStoreQuantity, rateProduct, clearCart, dismissToast }}>
+    <CartContext.Provider value={{ state, totalCount, grandTotal, artworkTotal, storeTotal, addArtwork, removeArtwork, addStoreItem, removeStoreItem, setStoreQuantity, rateProduct, clearCart, dismissCartModal }}>
       {children}
-      {/* Toast notification */}
-      {state.toast && (
-        <div className="toast-container" style={{
-          position: 'fixed', bottom: 32, right: 32, zIndex: 9000,
-          background: 'var(--bg-card)', border: '1px solid var(--gold-primary)',
-          padding: '14px 24px', display: 'flex', alignItems: 'center', gap: 12,
-          boxShadow: 'var(--shadow-md)',
-          animation: 'fadeInUp 0.3s ease',
-          transition: 'background 0.35s ease, border-color 0.35s ease',
-        }}>
-          <span style={{ color: 'var(--gold-light)', fontSize: 16 }}>✦</span>
-          <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>{state.toast}</span>
-          <button onClick={dismissToast} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 14, marginLeft: 8 }}>✕</button>
-        </div>
+      {state.cartModal && (
+        <CartSuccessModal
+          itemName={state.cartModal.itemName}
+          onClose={dismissCartModal}
+        />
       )}
     </CartContext.Provider>
   )
